@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HSK Marina Asset Tracker</title>
+<style>
+  :root {
+    --bg: #f4f6f8; --card: #ffffff; --ink: #1b2733; --muted: #62707d;
+    --accent: #0b6e99; --online: #2e9e5b; --offline: #98a4ae;
+    --highlight: #ffd166;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 1rem; background: var(--bg); color: var(--ink);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    max-width: 40rem; margin-inline: auto;
+  }
+  h1 { font-size: 1.15rem; margin: 0 0 .75rem; }
+  #search {
+    width: 100%; padding: .7rem .9rem; font-size: 1.05rem;
+    border: 1px solid #cdd6dd; border-radius: .6rem; background: var(--card);
+  }
+  #zonemap {
+    display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; margin: 1rem 0;
+  }
+  .zone {
+    border: 2px solid #cdd6dd; border-radius: .6rem; padding: .9rem .5rem;
+    text-align: center; font-weight: 600; font-size: .9rem; background: var(--card);
+    color: var(--muted);
+  }
+  .zone.hit { border-color: var(--highlight); background: var(--highlight); color: var(--ink); }
+  #cards { display: flex; flex-direction: column; gap: .6rem; }
+  .card {
+    background: var(--card); border-radius: .7rem; padding: .8rem 1rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,.08);
+  }
+  .card .top { display: flex; align-items: center; gap: .5rem; }
+  .dot { width: .7rem; height: .7rem; border-radius: 50%; flex: none; }
+  .dot.on { background: var(--online); }
+  .dot.off { background: var(--offline); }
+  .name { font-weight: 700; text-transform: capitalize; }
+  .zonelabel { margin-left: auto; color: var(--accent); font-weight: 600; font-size: .9rem; }
+  .meta { color: var(--muted); font-size: .88rem; margin-top: .2rem; }
+  #empty { color: var(--muted); text-align: center; padding: 1.5rem 0; }
+</style>
+</head>
+<body>
+  <h1>HSK Marina Asset Tracker</h1>
+  <input id="search" type="search" placeholder="Search for a tool… e.g. screwdriver"
+         autocomplete="off" autofocus>
+  <div id="zonemap">
+    {{range .Zones}}<div class="zone" data-zone="{{.}}">{{.}}</div>{{end}}
+  </div>
+  <div id="cards"></div>
+  <p id="empty" hidden>No matching assets.</p>
+  <script src="/static/app.js"></script>
+</body>
+</html>
