@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"log"
-	"net/http"
 	"os"
 )
 
@@ -16,10 +15,10 @@ func main() {
 	verbose := flag.Bool("verbose", false, "log every beacon sighting")
 	flag.Parse()
 
-	srv := NewServer(NewTracker(), *verbose)
+	srv := NewServer(NewTracker(), *verbose).HTTPServer(*addr)
 
-	log.Printf("marina asset tracker listening on %s (POST /ingest, GET /, GET /api/assets)", *addr)
-	if err := http.ListenAndServe(*addr, srv.Routes()); err != nil {
+	log.Printf("asset tracker listening on %s (POST /ingest, GET /, GET /api/assets)", *addr)
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }

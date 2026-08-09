@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 //go:embed templates static
@@ -53,13 +54,37 @@ func (s *Server) Routes() *http.ServeMux {
 	return mux
 }
 
+// HTTPServer wraps the routes in a server with timeouts. http.ListenAndServe
+// applies none by default, so a client that opens a connection and then stalls
+// mid-request holds it open forever; enough of those and the tracker stops
+// answering while every gateway is still happily reporting. The read window is
+// generous compared with a G1-E batch, and the idle window keeps the UI's 2 s
+// polling on one connection rather than reconnecting every time.
+func (s *Server) HTTPServer(addr string) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           s.Routes(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+}
+
+// maxIngestBytes caps a single POST /ingest body. A gateway batch is a
+// heartbeat plus one entry per beacon heard in the last second — tens of
+// kilobytes at the very worst — so this is orders of magnitude of headroom
+// while still keeping an unauthenticated endpoint from being handed an
+// unbounded body to buffer in memory.
+const maxIngestBytes = 1 << 20 // 1 MiB
+
 // handleIngest accepts a G1-E payload. It always answers 200 — the gateway
 // must keep sending even if we couldn't make sense of one batch — so parse
 // errors are logged, never returned.
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	defer w.WriteHeader(http.StatusOK)
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxIngestBytes))
 	if err != nil {
 		log.Printf("ingest: read body: %v", err)
 		return

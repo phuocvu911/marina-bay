@@ -121,6 +121,24 @@ func TestNeverSeenAssetListedOffline(t *testing.T) {
 	}
 }
 
+// Assets() is a live request path. A track whose owning gateway has no reading
+// is unreachable through Observe today, but it must degrade to "no signal
+// data" rather than panicking if that ever changes.
+func TestAssetsSurvivesOwningGatewayWithNoReading(t *testing.T) {
+	tr, _ := newTestTracker()
+	tr.tracks[7] = &assetTrack{
+		minor:    7,
+		readings: map[string]*reading{},
+		zoneGW:   gwA,
+		lastSeen: tr.now(),
+	}
+
+	v := findAsset(t, tr, 7) // must not panic
+	if v.RSSI != 0 || v.Proximity != "" || v.Zone != "" {
+		t.Errorf("view = %+v, want no zone or signal data when the owner has no reading", v)
+	}
+}
+
 func TestProximityHint(t *testing.T) {
 	cases := []struct {
 		ema  float64

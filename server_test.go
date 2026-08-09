@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The exact sample batch from the G1-E capture: one heartbeat, one sighting
@@ -75,6 +76,55 @@ func TestIngestGarbageStillReturns200(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK {
 		t.Errorf("POST /ingest with garbage status = %d, want 200 so the gateway keeps sending", res.StatusCode)
+	}
+}
+
+// An oversized body must not be buffered whole, and must not take the tracker
+// down with it — the next gateway to report has to still get through.
+func TestIngestCapsBodySize(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	huge := strings.NewReader(strings.Repeat("x", maxIngestBytes*2))
+	if res, err := http.Post(ts.URL+"/ingest", "application/json", huge); err == nil {
+		res.Body.Close()
+	}
+
+	res, err := http.Post(ts.URL+"/ingest", "application/json", strings.NewReader(sampleBatch))
+	if err != nil {
+		t.Fatalf("POST /ingest after an oversized body: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status after an oversized body = %d, want 200", res.StatusCode)
+	}
+	for _, v := range getAssets(t, ts, "") {
+		if v.Minor == 0 {
+			return
+		}
+	}
+	t.Error("gateway could not ingest after an oversized body")
+}
+
+// Timeouts are the only thing standing between an open port and a connection
+// that is held forever, so an unset one is a real regression.
+func TestHTTPServerSetsTimeouts(t *testing.T) {
+	srv := NewServer(NewTracker(), false).HTTPServer(":0")
+	for _, c := range []struct {
+		name string
+		got  time.Duration
+	}{
+		{"ReadHeaderTimeout", srv.ReadHeaderTimeout},
+		{"ReadTimeout", srv.ReadTimeout},
+		{"WriteTimeout", srv.WriteTimeout},
+		{"IdleTimeout", srv.IdleTimeout},
+	} {
+		if c.got <= 0 {
+			t.Errorf("%s = %v, want a positive timeout", c.name, c.got)
+		}
+	}
+	if srv.Handler == nil {
+		t.Error("HTTPServer returned no handler")
 	}
 }
 

@@ -143,14 +143,21 @@ func (t *Tracker) Assets() []AssetView {
 		v := AssetView{
 			Name:         name,
 			Minor:        minor,
-			Zone:         zoneName(a.zoneGW),
-			RSSI:         int(math.Round(a.readings[a.zoneGW].ema)),
 			SecondsSince: int(age.Seconds()),
 			LastSeen:     a.lastSeen,
 			Online:       age <= staleAfter,
 		}
-		if v.Online {
-			v.Proximity = proximityHint(a.readings[a.zoneGW].ema)
+		// Every track that Observe creates has a reading for its owning
+		// gateway, and readings are never deleted — but this is a read path
+		// serving live requests, and one future cleanup that drops a stale
+		// reading would turn a missing entry into a nil dereference here.
+		// Report what we have instead.
+		if r := a.readings[a.zoneGW]; r != nil {
+			v.Zone = zoneName(a.zoneGW)
+			v.RSSI = int(math.Round(r.ema))
+			if v.Online {
+				v.Proximity = proximityHint(r.ema)
+			}
 		}
 		views[minor] = v
 	}
