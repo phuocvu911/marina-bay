@@ -80,17 +80,17 @@ func TestAssetsQueryFilter(t *testing.T) {
 	ts := newTestServer()
 	defer ts.Close()
 
-	views := getAssets(t, ts, "?q=screw")
-	if len(views) != 1 || views[0].Name != "screwdriver" {
-		t.Fatalf("q=screw returned %+v, want just screwdriver", views)
+	views := getAssets(t, ts, "?q=crad")
+	if len(views) != 1 || views[0].Name != "cradle" {
+		t.Fatalf("q=crad returned %+v, want just cradle", views)
 	}
 
-	if views := getAssets(t, ts, "?q=SCREW"); len(views) != 1 {
-		t.Errorf("filter should be case-insensitive, q=SCREW returned %+v", views)
+	if views := getAssets(t, ts, "?q=CRAD"); len(views) != 1 {
+		t.Errorf("filter should be case-insensitive, q=CRAD returned %+v", views)
 	}
 
-	if views := getAssets(t, ts, "?q=nosuchtool"); len(views) != 0 {
-		t.Errorf("q=nosuchtool returned %+v, want empty", views)
+	if views := getAssets(t, ts, "?q=nosuchasset"); len(views) != 0 {
+		t.Errorf("q=nosuchasset returned %+v, want empty", views)
 	}
 }
 

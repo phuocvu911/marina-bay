@@ -21,8 +21,8 @@ Go 1.22+, stdlib only — no dependencies, no build step.
 Both registries are hardcoded maps in `registry.go` — edit and redeploy:
 
 - `gateways`: gateway MAC (lowercase, as sent in its heartbeat) → zone name.
-  Three entries are still `REPLACE_ME_*` placeholders; fill them in with the
-  real MACs of gateways 2–4.
+  Two entries are still `REPLACE_ME_*` placeholders; fill them in with the
+  real MACs of gateways 3–4.
 - `assets`: beacon minor number → asset name. Beacon MACs are not stable;
   identity is the minor only. All beacons share `fleetUUID` (currently the i3
   factory UUID — change the constant when you program a custom UUID in

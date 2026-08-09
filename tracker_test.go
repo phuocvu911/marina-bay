@@ -115,9 +115,9 @@ func TestStalenessTransition(t *testing.T) {
 
 func TestNeverSeenAssetListedOffline(t *testing.T) {
 	tr, _ := newTestTracker()
-	v := findAsset(t, tr, 2) // wrench, registered but never heard
-	if v.Name != "wrench" || v.Online || v.SecondsSince != -1 || v.Zone != "" {
-		t.Errorf("never-seen asset view = %+v, want offline wrench with no zone", v)
+	v := findAsset(t, tr, 2) // trolley, registered but never heard
+	if v.Name != "trolley" || v.Online || v.SecondsSince != -1 || v.Zone != "" {
+		t.Errorf("never-seen asset view = %+v, want offline trolley with no zone", v)
 	}
 }
 

@@ -12,15 +12,15 @@ const fleetUUID = "E2C56DB5-DFFB-48D2-B060-D0F5A71096E0"
 // gateways maps a gateway MAC (lowercase hex, exactly as sent in the
 // heartbeat entry) to the zone it covers.
 var gateways = map[string]string{
-	"ac233fc26fb0": "Living Room", // real MAC of gateway 1
-	"ac233fc270d4": "Kitchen",
+	"ac233fc26fb0": "Race Office", // real MAC of gateway 1
+	"ac233fc270d4": "Club House",  // real MAC of gateway 2
 	"REPLACE_ME_3": "Gas Station",
 	"REPLACE_ME_4": "North Yard",
 }
 
 // assets maps a beacon's minor number to the asset name.
 var assets = map[uint16]string{
-	1: "craddle",
+	1: "cradle",
 	2: "trolley",
 }
 
