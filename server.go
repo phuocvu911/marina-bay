@@ -4,11 +4,11 @@ import (
 	"embed"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"io"
 	"log"
 	"net/http"
-	"sort"
 	"strings"
 )
 
@@ -22,10 +22,23 @@ type Server struct {
 	verbose bool
 }
 
+// tmplFuncs turn normalised zone geometry into CSS percentages, so the sector
+// overlay lines up with the floor plan at whatever size it renders. Doing it
+// server-side keeps the map meaningful with JavaScript switched off.
+var tmplFuncs = template.FuncMap{
+	"sectorStyle": func(z Zone) template.CSS {
+		return template.CSS(fmt.Sprintf("left:%.3f%%;top:%.3f%%;width:%.3f%%;height:%.3f%%",
+			z.X*100, z.Y*100, z.W*100, z.H*100))
+	},
+	"gatewayStyle": func(z Zone) template.CSS {
+		return template.CSS(fmt.Sprintf("left:%.3f%%;top:%.3f%%", z.GwX*100, z.GwY*100))
+	},
+}
+
 func NewServer(tracker *Tracker, verbose bool) *Server {
 	return &Server{
 		tracker: tracker,
-		tmpl:    template.Must(template.ParseFS(uiFS, "templates/*.html")),
+		tmpl:    template.Must(template.New("ui").Funcs(tmplFuncs).ParseFS(uiFS, "templates/*.html")),
 		verbose: verbose,
 	}
 }
@@ -61,7 +74,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	gatewayMAC := ""
 	for _, e := range entries {
 		if e.Gateway != "" {
-			gatewayMAC = strings.ToLower(e.Gateway)
+			gatewayMAC = normalizeMAC(e.Gateway)
 			s.tracker.Heartbeat(gatewayMAC)
 		}
 	}
@@ -110,11 +123,6 @@ func (s *Server) handleGateways(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	zones := make([]string, 0, len(gateways))
-	for _, z := range gateways {
-		zones = append(zones, z)
-	}
-	sort.Strings(zones)
 	if err := s.tmpl.ExecuteTemplate(w, "index.html", map[string]any{"Zones": zones}); err != nil {
 		log.Printf("render index: %v", err)
 	}

@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -50,11 +52,11 @@ func TestIngestSampleBatch(t *testing.T) {
 		t.Fatalf("POST /ingest status = %d, want 200", res.StatusCode)
 	}
 
-	// The sighting (minor 0, unregistered) must show up in Race Office.
+	// The sighting (minor 0, unregistered) must show up in West Wing.
 	for _, v := range getAssets(t, ts, "") {
 		if v.Minor == 0 {
-			if v.Zone != "Race Office" || !v.Online {
-				t.Errorf("minor 0 view = %+v, want online in Race Office", v)
+			if v.Zone != "West Wing" || !v.Online {
+				t.Errorf("minor 0 view = %+v, want online in West Wing", v)
 			}
 			return
 		}
@@ -113,8 +115,8 @@ func TestGatewaysHeartbeat(t *testing.T) {
 	if err := json.NewDecoder(res.Body).Decode(&gws); err != nil {
 		t.Fatalf("decode gateways: %v", err)
 	}
-	if len(gws) != len(gateways) {
-		t.Fatalf("got %d gateways, want %d", len(gws), len(gateways))
+	if len(gws) != len(zones) {
+		t.Fatalf("got %d gateways, want %d", len(gws), len(zones))
 	}
 	for _, g := range gws {
 		beat := g.SecondsSinceBeat >= 0
@@ -123,6 +125,23 @@ func TestGatewaysHeartbeat(t *testing.T) {
 		}
 		if g.MAC != "ac233fc26fb0" && beat {
 			t.Errorf("gateway %s shows a heartbeat it never sent", g.MAC)
+		}
+	}
+}
+
+// A G1-E label prints its MAC uppercase and colon-separated. Typing it into
+// the registry that way must still match the lowercase, separator-free MAC
+// the gateway actually sends, or the sector silently never resolves.
+func TestGatewayMACLabelFormatsMatch(t *testing.T) {
+	want := zones[0].MAC
+	for _, form := range []string{
+		"AC233FC26FB0", "ac:23:3f:c2:6f:b0", "AC-23-3F-C2-6F-B0", "Ac233fC26Fb0",
+	} {
+		if got := normalizeMAC(form); got != want {
+			t.Errorf("normalizeMAC(%q) = %q, want %q", form, got, want)
+		}
+		if zoneName(normalizeMAC(form)) != zones[0].Name {
+			t.Errorf("%q did not resolve to %q", form, zones[0].Name)
 		}
 	}
 }
@@ -139,12 +158,48 @@ func TestIndexServesUI(t *testing.T) {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("GET / status = %d", res.StatusCode)
 	}
-	buf := make([]byte, 4096)
-	n, _ := res.Body.Read(buf)
-	body := string(buf[:n])
-	for _, want := range []string{"Race Office", "Club House", "Gas Station", "North Yard", "app.js"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("index page missing %q", want)
+	// Read it all: one Read is not guaranteed to return the whole body, and
+	// the page outgrew a fixed buffer once the floor plan went inline.
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read index body: %v", err)
+	}
+	// Derived from the registry, not hardcoded: a literal list here is what
+	// silently rotted last time the zone names changed.
+	for _, z := range zones {
+		if !strings.Contains(string(body), z.Name) {
+			t.Errorf("index page missing zone %q", z.Name)
+		}
+	}
+	if !strings.Contains(string(body), "app.js") {
+		t.Error("index page does not load app.js")
+	}
+}
+
+// The sector overlay is positioned from the normalised geometry in zones, so
+// a zone whose rectangle never made it into the page would silently show the
+// asset in the wrong place on the map.
+func TestIndexPositionsEverySector(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read index body: %v", err)
+	}
+	for _, z := range zones {
+		want := fmt.Sprintf("left:%.3f%%;top:%.3f%%;width:%.3f%%;height:%.3f%%",
+			z.X*100, z.Y*100, z.W*100, z.H*100)
+		if !strings.Contains(string(body), want) {
+			t.Errorf("sector %q missing its overlay geometry (%s)", z.Name, want)
+		}
+		if !strings.Contains(string(body), `data-gw="`+z.MAC+`"`) {
+			t.Errorf("gateway marker for %q (%s) not on the map", z.Name, z.MAC)
 		}
 	}
 }

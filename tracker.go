@@ -176,16 +176,17 @@ func (t *Tracker) Gateways() []GatewayView {
 	defer t.mu.RUnlock()
 	now := t.now()
 
-	out := make([]GatewayView, 0, len(gateways))
-	for mac, zone := range gateways {
-		v := GatewayView{MAC: mac, Zone: zone, SecondsSinceBeat: -1}
-		if hb, ok := t.heartbeats[mac]; ok {
+	// Declaration order is west to east, which is the useful order to read a
+	// floor in — more useful than sorting by name.
+	out := make([]GatewayView, 0, len(zones))
+	for _, z := range zones {
+		v := GatewayView{MAC: z.MAC, Zone: z.Name, SecondsSinceBeat: -1}
+		if hb, ok := t.heartbeats[z.MAC]; ok {
 			v.LastHeartbeat = hb
 			v.SecondsSinceBeat = int(now.Sub(hb).Seconds())
 		}
 		out = append(out, v)
 	}
-	sortGateways(out)
 	return out
 }
 
@@ -195,10 +196,6 @@ func itoa(minor uint16) string {
 
 func sortViews(v []AssetView) {
 	sort.Slice(v, func(i, j int) bool { return v[i].Name < v[j].Name })
-}
-
-func sortGateways(v []GatewayView) {
-	sort.Slice(v, func(i, j int) bool { return v[i].Zone < v[j].Zone })
 }
 
 func proximityHint(ema float64) string {

@@ -6,8 +6,8 @@ import (
 )
 
 const (
-	gwA = "ac233fc26fb0" // Race Office
-	gwB = "ac233fc270d4" // Club House
+	gwA = "ac233fc26fb0" // West Wing
+	gwB = "ac233fc270d4" // Stair A
 )
 
 // newTestTracker returns a tracker with a controllable clock.
@@ -54,8 +54,8 @@ func TestHysteresisNoFlipUnderMargin(t *testing.T) {
 	tr, _ := newTestTracker()
 	tr.Observe(1, gwA, -60)
 	tr.Observe(1, gwB, -57) // only 3 dBm louder — must not steal the asset
-	if got := findAsset(t, tr, 1).Zone; got != "Race Office" {
-		t.Errorf("zone = %q, want Race Office (3 dBm is under the 4 dBm margin)", got)
+	if got := findAsset(t, tr, 1).Zone; got != "West Wing" {
+		t.Errorf("zone = %q, want West Wing (3 dBm is under the 4 dBm margin)", got)
 	}
 }
 
@@ -63,8 +63,8 @@ func TestHysteresisFlipsAtMargin(t *testing.T) {
 	tr, _ := newTestTracker()
 	tr.Observe(1, gwA, -60)
 	tr.Observe(1, gwB, -56) // exactly 4 dBm louder — takes over
-	if got := findAsset(t, tr, 1).Zone; got != "Club House" {
-		t.Errorf("zone = %q, want Club House (4 dBm meets the margin)", got)
+	if got := findAsset(t, tr, 1).Zone; got != "Stair A" {
+		t.Errorf("zone = %q, want Stair A (4 dBm meets the margin)", got)
 	}
 }
 
@@ -72,12 +72,12 @@ func TestHysteresisFlipsAsChallengerEMAClimbs(t *testing.T) {
 	tr, _ := newTestTracker()
 	tr.Observe(1, gwA, -60)
 	tr.Observe(1, gwB, -57) // ema -57: under margin, stays
-	if got := findAsset(t, tr, 1).Zone; got != "Race Office" {
-		t.Fatalf("zone = %q, want Race Office before margin met", got)
+	if got := findAsset(t, tr, 1).Zone; got != "West Wing" {
+		t.Fatalf("zone = %q, want West Wing before margin met", got)
 	}
 	tr.Observe(1, gwB, -50) // ema = 0.3*(-50)+0.7*(-57) = -54.9: beats -56
-	if got := findAsset(t, tr, 1).Zone; got != "Club House" {
-		t.Errorf("zone = %q, want Club House once EMA clears the margin", got)
+	if got := findAsset(t, tr, 1).Zone; got != "Stair A" {
+		t.Errorf("zone = %q, want Stair A once EMA clears the margin", got)
 	}
 }
 
@@ -86,8 +86,8 @@ func TestStaleCurrentZoneSwitchesWithoutMargin(t *testing.T) {
 	tr.Observe(1, gwA, -60)
 	*now = now.Add(6 * time.Second) // gwA's reading falls out of the freshness window
 	tr.Observe(1, gwB, -80)         // much quieter, but the only fresh gateway
-	if got := findAsset(t, tr, 1).Zone; got != "Club House" {
-		t.Errorf("zone = %q, want Club House (stale owner loses without margin)", got)
+	if got := findAsset(t, tr, 1).Zone; got != "Stair A" {
+		t.Errorf("zone = %q, want Stair A (stale owner loses without margin)", got)
 	}
 }
 
@@ -105,8 +105,8 @@ func TestStalenessTransition(t *testing.T) {
 	if v.Online {
 		t.Error("asset should be offline after 30s of silence")
 	}
-	if v.Zone != "Race Office" {
-		t.Errorf("last-seen zone = %q, want Race Office (never delete last-seen info)", v.Zone)
+	if v.Zone != "West Wing" {
+		t.Errorf("last-seen zone = %q, want West Wing (never delete last-seen info)", v.Zone)
 	}
 	if v.SecondsSince != 31 {
 		t.Errorf("seconds_since = %d, want 31", v.SecondsSince)
