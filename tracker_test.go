@@ -7,7 +7,7 @@ import (
 
 const (
 	gwA = "ac233fc26fb0" // Race Office
-	gwB = "REPLACE_ME_2" // Club House
+	gwB = "ac233fc270d4" // Club House
 )
 
 // newTestTracker returns a tracker with a controllable clock.
