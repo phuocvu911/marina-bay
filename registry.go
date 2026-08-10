@@ -43,8 +43,8 @@ type Zone struct {
 var zones = []Zone{
 	{Name: "West Wing", MAC: "ac233fc26fb0", X: 0.00, Y: 0, W: 0.14, H: 1, GwX: 0.07, GwY: 0.80},
 	{Name: "Stair A", MAC: "ac233fc270d4", X: 0.14, Y: 0, W: 0.16, H: 1, GwX: 0.22, GwY: 0.80},
-	{Name: "Central Office", MAC: "REPLACE_ME_3", X: 0.30, Y: 0, W: 0.32, H: 1, GwX: 0.46, GwY: 0.80},
-	{Name: "East Office", MAC: "REPLACE_ME_4", X: 0.62, Y: 0, W: 0.38, H: 1, GwX: 0.80, GwY: 0.80},
+	{Name: "Central Office", MAC: "ac233fc26fad", X: 0.30, Y: 0, W: 0.32, H: 1, GwX: 0.46, GwY: 0.80},
+	{Name: "East Office", MAC: "ac233fc26fb8", X: 0.62, Y: 0, W: 0.38, H: 1, GwX: 0.80, GwY: 0.80},
 }
 
 // normalizeMAC folds a MAC to the form the gateway sends it in: lowercase
