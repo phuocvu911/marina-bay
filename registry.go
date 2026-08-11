@@ -79,6 +79,7 @@ var gatewayZone = func() map[string]*Zone {
 var assets = map[uint16]string{
 	1: "cradle",
 	2: "trolley",
+	3: "bucket",
 }
 
 func assetName(minor uint16) string {
