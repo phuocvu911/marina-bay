@@ -143,14 +143,21 @@ func (t *Tracker) Assets() []AssetView {
 		v := AssetView{
 			Name:         name,
 			Minor:        minor,
-			Zone:         zoneName(a.zoneGW),
-			RSSI:         int(math.Round(a.readings[a.zoneGW].ema)),
 			SecondsSince: int(age.Seconds()),
 			LastSeen:     a.lastSeen,
 			Online:       age <= staleAfter,
 		}
-		if v.Online {
-			v.Proximity = proximityHint(a.readings[a.zoneGW].ema)
+		// Every track that Observe creates has a reading for its owning
+		// gateway, and readings are never deleted — but this is a read path
+		// serving live requests, and one future cleanup that drops a stale
+		// reading would turn a missing entry into a nil dereference here.
+		// Report what we have instead.
+		if r := a.readings[a.zoneGW]; r != nil {
+			v.Zone = zoneName(a.zoneGW)
+			v.RSSI = int(math.Round(r.ema))
+			if v.Online {
+				v.Proximity = proximityHint(r.ema)
+			}
 		}
 		views[minor] = v
 	}
@@ -176,16 +183,17 @@ func (t *Tracker) Gateways() []GatewayView {
 	defer t.mu.RUnlock()
 	now := t.now()
 
-	out := make([]GatewayView, 0, len(gateways))
-	for mac, zone := range gateways {
-		v := GatewayView{MAC: mac, Zone: zone, SecondsSinceBeat: -1}
-		if hb, ok := t.heartbeats[mac]; ok {
+	// Declaration order is west to east, which is the useful order to read a
+	// floor in — more useful than sorting by name.
+	out := make([]GatewayView, 0, len(zones))
+	for _, z := range zones {
+		v := GatewayView{MAC: z.MAC, Zone: z.Name, SecondsSinceBeat: -1}
+		if hb, ok := t.heartbeats[z.MAC]; ok {
 			v.LastHeartbeat = hb
 			v.SecondsSinceBeat = int(now.Sub(hb).Seconds())
 		}
 		out = append(out, v)
 	}
-	sortGateways(out)
 	return out
 }
 
@@ -195,10 +203,6 @@ func itoa(minor uint16) string {
 
 func sortViews(v []AssetView) {
 	sort.Slice(v, func(i, j int) bool { return v[i].Name < v[j].Name })
-}
-
-func sortGateways(v []GatewayView) {
-	sort.Slice(v, func(i, j int) bool { return v[i].Zone < v[j].Zone })
 }
 
 func proximityHint(ema float64) string {

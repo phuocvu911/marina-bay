@@ -4,12 +4,13 @@ import (
 	"embed"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"io"
 	"log"
 	"net/http"
-	"sort"
 	"strings"
+	"time"
 )
 
 //go:embed templates static
@@ -22,10 +23,23 @@ type Server struct {
 	verbose bool
 }
 
+// tmplFuncs turn normalised zone geometry into CSS percentages, so the sector
+// overlay lines up with the floor plan at whatever size it renders. Doing it
+// server-side keeps the map meaningful with JavaScript switched off.
+var tmplFuncs = template.FuncMap{
+	"sectorStyle": func(z Zone) template.CSS {
+		return template.CSS(fmt.Sprintf("left:%.3f%%;top:%.3f%%;width:%.3f%%;height:%.3f%%",
+			z.X*100, z.Y*100, z.W*100, z.H*100))
+	},
+	"gatewayStyle": func(z Zone) template.CSS {
+		return template.CSS(fmt.Sprintf("left:%.3f%%;top:%.3f%%", z.GwX*100, z.GwY*100))
+	},
+}
+
 func NewServer(tracker *Tracker, verbose bool) *Server {
 	return &Server{
 		tracker: tracker,
-		tmpl:    template.Must(template.ParseFS(uiFS, "templates/*.html")),
+		tmpl:    template.Must(template.New("ui").Funcs(tmplFuncs).ParseFS(uiFS, "templates/*.html")),
 		verbose: verbose,
 	}
 }
@@ -40,13 +54,37 @@ func (s *Server) Routes() *http.ServeMux {
 	return mux
 }
 
+// HTTPServer wraps the routes in a server with timeouts. http.ListenAndServe
+// applies none by default, so a client that opens a connection and then stalls
+// mid-request holds it open forever; enough of those and the tracker stops
+// answering while every gateway is still happily reporting. The read window is
+// generous compared with a G1-E batch, and the idle window keeps the UI's 2 s
+// polling on one connection rather than reconnecting every time.
+func (s *Server) HTTPServer(addr string) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           s.Routes(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+}
+
+// maxIngestBytes caps a single POST /ingest body. A gateway batch is a
+// heartbeat plus one entry per beacon heard in the last second — tens of
+// kilobytes at the very worst — so this is orders of magnitude of headroom
+// while still keeping an unauthenticated endpoint from being handed an
+// unbounded body to buffer in memory.
+const maxIngestBytes = 1 << 20 // 1 MiB
+
 // handleIngest accepts a G1-E payload. It always answers 200 — the gateway
 // must keep sending even if we couldn't make sense of one batch — so parse
 // errors are logged, never returned.
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	defer w.WriteHeader(http.StatusOK)
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxIngestBytes))
 	if err != nil {
 		log.Printf("ingest: read body: %v", err)
 		return
@@ -61,7 +99,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	gatewayMAC := ""
 	for _, e := range entries {
 		if e.Gateway != "" {
-			gatewayMAC = strings.ToLower(e.Gateway)
+			gatewayMAC = normalizeMAC(e.Gateway)
 			s.tracker.Heartbeat(gatewayMAC)
 		}
 	}
@@ -110,11 +148,6 @@ func (s *Server) handleGateways(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	zones := make([]string, 0, len(gateways))
-	for _, z := range gateways {
-		zones = append(zones, z)
-	}
-	sort.Strings(zones)
 	if err := s.tmpl.ExecuteTemplate(w, "index.html", map[string]any{"Zones": zones}); err != nil {
 		log.Printf("render index: %v", err)
 	}

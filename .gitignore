@@ -1,0 +1,2 @@
+# `go build` in the module root drops an executable named after the module.
+/marina-bay

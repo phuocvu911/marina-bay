@@ -3,33 +3,75 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>HSK Marina Asset Tracker</title>
+<title>HSK Asset Tracker</title>
 <style>
   :root {
     --bg: #f4f6f8; --card: #ffffff; --ink: #1b2733; --muted: #62707d;
     --accent: #0b6e99; --online: #2e9e5b; --offline: #98a4ae;
-    --highlight: #ffd166;
+    --highlight: #ffd166; --escape: #b7e4c7; --line: #cdd6dd;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; padding: 1rem; background: var(--bg); color: var(--ink);
     font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
-    max-width: 40rem; margin-inline: auto;
+    max-width: 46rem; margin-inline: auto;
   }
   h1 { font-size: 1.15rem; margin: 0 0 .75rem; }
   #search {
     width: 100%; padding: .7rem .9rem; font-size: 1.05rem;
-    border: 1px solid #cdd6dd; border-radius: .6rem; background: var(--card);
+    border: 1px solid var(--line); border-radius: .6rem; background: var(--card);
   }
-  #zonemap {
-    display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; margin: 1rem 0;
+
+  /* Floor plan: schematic underneath, sector overlay on top. Both are boxed
+     by #floorplan, so the normalised sector rectangles line up at any size. */
+  #floorplan {
+    position: relative; aspect-ratio: 1000 / 250; margin: 1rem 0;
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: .6rem; overflow: hidden;
   }
-  .zone {
-    border: 2px solid #cdd6dd; border-radius: .6rem; padding: .9rem .5rem;
-    text-align: center; font-weight: 600; font-size: .9rem; background: var(--card);
-    color: var(--muted);
+  #floorplan svg.plan {
+    position: absolute; inset: 0; width: 100%; height: 100%; display: block;
   }
-  .zone.hit { border-color: var(--highlight); background: var(--highlight); color: var(--ink); }
+  .wall { fill: none; stroke: #4a5a68; stroke-width: 3; }
+  .wall.thin { stroke-width: 1.4; }
+  .part { fill: none; stroke: #8c9aa6; stroke-width: 1.2; }
+  .furn { fill: #e4e9ed; stroke: #b9c4cd; stroke-width: .8; }
+  .escape { fill: var(--escape); }
+  .exit { fill: #2e9e5b; }
+  .exitmark { fill: #ffffff; font: 700 11px system-ui, sans-serif; text-anchor: middle; }
+  .roomlabel { fill: #7d8b97; font: 600 9px system-ui, sans-serif; text-anchor: middle; }
+
+  #sectors { position: absolute; inset: 0; }
+  .sector {
+    position: absolute; border-right: 1px dashed var(--line);
+    display: flex; align-items: flex-start; justify-content: center;
+    transition: background .18s ease;
+  }
+  #sectors .sector:last-child { border-right: 0; }
+  .sector.hit { background: rgba(255, 209, 102, .5); }
+  .sector .label {
+    font-size: .58rem; font-weight: 700; letter-spacing: .03em;
+    text-transform: uppercase; color: var(--muted); text-align: center;
+    line-height: 1.15; margin-top: 5px; padding: 2px 5px;
+    /* Sits over the north wall, so it needs its own ground to stay legible. */
+    background: rgba(255, 255, 255, .84); border-radius: .25rem;
+  }
+  .sector.hit .label { color: var(--ink); }
+
+  .gw {
+    position: absolute; width: .55rem; height: .55rem; border-radius: 50%;
+    background: var(--accent); transform: translate(-50%, -50%);
+    box-shadow: 0 0 0 2px var(--card); transition: background .18s ease;
+  }
+  .gw.dead { background: var(--offline); }
+
+  .legend {
+    display: flex; flex-wrap: wrap; gap: .25rem 1rem; align-items: center;
+    color: var(--muted); font-size: .78rem; margin: -.4rem 0 1rem;
+  }
+  .legend span { display: inline-flex; align-items: center; gap: .35rem; }
+  .swatch { width: .6rem; height: .6rem; border-radius: 50%; flex: none; }
+
   #cards { display: flex; flex-direction: column; gap: .6rem; }
   .card {
     background: var(--card); border-radius: .7rem; padding: .8rem 1rem;
@@ -46,12 +88,93 @@
 </style>
 </head>
 <body>
-  <h1>HSK Marina Asset Tracker</h1>
-  <input id="search" type="search" placeholder="Search for a tool… e.g. screwdriver"
+  <h1>HSK Asset Tracker</h1>
+  <input id="search" type="search" placeholder="Search for an asset… e.g. cradle"
          autocomplete="off" autofocus>
-  <div id="zonemap">
-    {{range .Zones}}<div class="zone" data-zone="{{.}}">{{.}}</div>{{end}}
+
+  <div id="floorplan">
+    <!-- Schematic of the floor, west (left) to east (right). Drop a real plan
+         at static/floorplan.png and swap this <svg> for an <img> — the sector
+         overlay below is positioned in percentages and needs no changes. -->
+    <svg class="plan" viewBox="0 0 1000 250" preserveAspectRatio="none" aria-hidden="true">
+      <defs>
+        <pattern id="desks" width="26" height="22" patternUnits="userSpaceOnUse">
+          <rect class="furn" x="4" y="5" width="18" height="12" rx="1"/>
+        </pattern>
+      </defs>
+
+      <!-- escape route: corridor along the south wall, spurs to both stairs -->
+      <g class="escape">
+        <rect x="120" y="196" width="760" height="15"/>
+        <rect x="158" y="76"  width="15"  height="128"/>
+        <rect x="850" y="72"  width="15"  height="132"/>
+      </g>
+
+      <!-- Shell. The building fills the viewBox edge to edge so the sector
+           bands overlaid on top line up with the walls rather than overhanging
+           them. -->
+      <rect class="wall" x="2" y="2" width="996" height="246"/>
+      <rect class="wall thin" x="11" y="11" width="978" height="228"/>
+
+      <!-- west wing: cellular rooms + meeting tables -->
+      <g class="part">
+        <path d="M100 11 V239"/><path d="M11 92 H100"/>
+        <path d="M11 148 H100"/><path d="M11 194 H100"/>
+      </g>
+      <g class="furn">
+        <rect x="30" y="30" width="27" height="17" rx="1"/>
+        <rect x="64" y="30" width="27" height="17" rx="1"/>
+        <rect x="30" y="57" width="27" height="17" rx="1"/>
+        <rect x="64" y="57" width="27" height="17" rx="1"/>
+      </g>
+
+      <!-- lifts (west), stair A, service block -->
+      <g class="part">
+        <rect x="107" y="52" width="30" height="30"/>
+        <path d="M107 52 L137 82 M137 52 L107 82"/>
+        <rect x="112" y="100" width="72" height="82"/>
+        <rect x="345" y="82" width="128" height="90"/>
+      </g>
+      <rect class="exit" x="158" y="19" width="46" height="57" rx="2"/>
+      <text class="exitmark" x="181" y="52">A</text>
+      <text class="roomlabel" x="409" y="131">IV-KH</text>
+      <text class="roomlabel" x="148" y="145">PORTTI</text>
+
+      <!-- open-plan desking: north band full length, south band east of IV-KH -->
+      <rect x="391" y="24" width="357" height="66" fill="url(#desks)"/>
+      <rect x="481" y="108" width="267" height="66" fill="url(#desks)"/>
+      <rect x="893" y="24" width="88" height="150" fill="url(#desks)"/>
+
+      <!-- east core: lifts, rooms, stair B -->
+      <g class="part">
+        <rect x="755" y="60" width="30" height="30"/>
+        <path d="M755 60 L785 90 M785 60 L755 90"/>
+        <rect x="797" y="60" width="48" height="70"/>
+      </g>
+      <rect class="exit" x="846" y="19" width="46" height="55" rx="2"/>
+      <text class="exitmark" x="869" y="51">B</text>
+    </svg>
+
+    <!-- One overlay box per sector, positioned from the normalised geometry in
+         registry.go. app.js only toggles .hit; nothing here depends on JS. -->
+    <div id="sectors">
+      {{range .Zones}}
+      <div class="sector" data-zone="{{.Name}}" style="{{sectorStyle .}}">
+        <span class="label">{{.Name}}</span>
+      </div>
+      {{end}}
+    </div>
+    {{range .Zones}}
+    <div class="gw" data-gw="{{.MAC}}" style="{{gatewayStyle .}}" title="{{.Name}} gateway"></div>
+    {{end}}
   </div>
+
+  <div class="legend">
+    <span><i class="swatch" style="background: var(--accent)"></i>gateway</span>
+    <span><i class="swatch" style="background: var(--offline)"></i>no heartbeat</span>
+    <span><i class="swatch" style="background: var(--highlight)"></i>asset here</span>
+  </div>
+
   <div id="cards"></div>
   <p id="empty" hidden>No matching assets.</p>
   <script src="/static/app.js"></script>
