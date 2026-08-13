@@ -20,6 +20,40 @@ const sampleBatch = `[
    "raw":"AgEGGv9MAAIV4sVttd/7SNKwYND1pxCW4AAAAADF"}
 ]`
 
+// The same capture with only the two minor bytes changed, so the registered
+// assets can be exercised over the real wire format rather than a synthesised
+// frame: minor 1 is the cradle, minor 2 the trolley.
+const (
+	cradlePayload  = "AgEGGv9MAAIV4sVttd/7SNKwYND1pxCW4AAAAAHF"
+	trolleyPayload = "AgEGGv9MAAIV4sVttd/7SNKwYND1pxCW4AAAAALF"
+)
+
+// batch renders one gateway's upload: its heartbeat followed by a sighting per
+// (payload, rssi) pair, which is the shape a G1-E actually POSTs.
+func batch(gatewayMAC string, sightings ...struct {
+	payload string
+	rssi    int
+}) string {
+	entries := []string{fmt.Sprintf(`{"gateway":%q,"timestamp":1782556716937,"seq":1}`, gatewayMAC)}
+	for i, s := range sightings {
+		entries = append(entries, fmt.Sprintf(
+			`{"mac":"c30000765%03d","timestamp":1782556717035,"rssi":%d,"raw":%q}`, i, s.rssi, s.payload))
+	}
+	return "[" + strings.Join(entries, ",\n") + "]"
+}
+
+func postBatch(t *testing.T, ts *httptest.Server, body string) {
+	t.Helper()
+	res, err := http.Post(ts.URL+"/ingest", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /ingest: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("POST /ingest status = %d, want 200", res.StatusCode)
+	}
+}
+
 func newTestServer() *httptest.Server {
 	return httptest.NewServer(NewServer(NewTracker(), nil, false).Routes())
 }
@@ -90,6 +124,76 @@ func TestIngestSampleBatch(t *testing.T) {
 		}
 	}
 	t.Error("ingested beacon (minor 0) missing from /api/assets")
+}
+
+// The end-to-end shape of the whole system: several gateways upload their own
+// batches, each hearing the same assets at different strengths, and every
+// asset lands in the sector of the gateway that heard it loudest.
+func TestIngestMultiGatewayResolvesEachAssetToTheLoudest(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	type sighting = struct {
+		payload string
+		rssi    int
+	}
+	// The cradle is by the west wall and the trolley is out at the east end,
+	// so each is loud on one gateway and faint on the others.
+	postBatch(t, ts, batch("ac233fc26fb0", sighting{cradlePayload, -45}, sighting{trolleyPayload, -88}))
+	postBatch(t, ts, batch("ac233fc270d4", sighting{cradlePayload, -71}, sighting{trolleyPayload, -80}))
+	postBatch(t, ts, batch("ac233fc26fb8", sighting{cradlePayload, -90}, sighting{trolleyPayload, -62}))
+
+	views := getAssets(t, ts, "")
+	cradle, ok := findView(views, 1)
+	if !ok {
+		t.Fatal("cradle (minor 1) missing from /api/assets")
+	}
+	if cradle.Zone != "West Wing" || !cradle.Online {
+		t.Errorf("cradle = %+v, want online in West Wing (-45 beats -71 and -90)", cradle)
+	}
+	if cradle.Proximity != "very close" {
+		t.Errorf("cradle proximity = %q, want very close at -45 dBm", cradle.Proximity)
+	}
+
+	trolley, ok := findView(views, 2)
+	if !ok {
+		t.Fatal("trolley (minor 2) missing from /api/assets")
+	}
+	if trolley.Zone != "East Office" || !trolley.Online {
+		t.Errorf("trolley = %+v, want online in East Office (-62 beats -80 and -88)", trolley)
+	}
+	// The two assets are in different sectors at different strengths, so the
+	// hints have to differ too — a proximity that ignored the winning EMA
+	// would still pass every zone assertion above.
+	if trolley.Proximity != "nearby" {
+		t.Errorf("trolley proximity = %q, want nearby at -62 dBm", trolley.Proximity)
+	}
+}
+
+// A gateway that goes on hearing an asset it has already lost must not drag it
+// back: the hysteresis margin is what keeps an asset on the boundary between
+// two gateways from flickering between sectors on the UI's 2 s poll.
+func TestIngestKeepsAssetStableUnderMarginalCompetition(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	type sighting = struct {
+		payload string
+		rssi    int
+	}
+	postBatch(t, ts, batch("ac233fc26fb0", sighting{cradlePayload, -60}))
+	postBatch(t, ts, batch("ac233fc270d4", sighting{cradlePayload, -58})) // 2 dBm: under the margin
+
+	v, _ := findView(getAssets(t, ts, ""), 1)
+	if v.Zone != "West Wing" {
+		t.Errorf("zone = %q, want West Wing — 2 dBm must not move an asset", v.Zone)
+	}
+
+	postBatch(t, ts, batch("ac233fc270d4", sighting{cradlePayload, -40})) // now clears it
+	v, _ = findView(getAssets(t, ts, ""), 1)
+	if v.Zone != "Stair A" {
+		t.Errorf("zone = %q, want Stair A once the challenger clears the margin", v.Zone)
+	}
 }
 
 func TestIngestGarbageStillReturns200(t *testing.T) {
