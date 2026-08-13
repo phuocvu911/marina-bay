@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +21,24 @@ const sampleBatch = `[
 ]`
 
 func newTestServer() *httptest.Server {
-	return httptest.NewServer(NewServer(NewTracker(), false).Routes())
+	return httptest.NewServer(NewServer(NewTracker(), nil, false).Routes())
+}
+
+// newPersistentTestServer wires a server to a store on disk, so a test can
+// close it and reopen the same file to model a restart.
+func newPersistentTestServer(t *testing.T, dbPath string) (*httptest.Server, *Store) {
+	t.Helper()
+	store, err := OpenStore(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	tracker := NewTracker()
+	states, err := store.LoadAssetState()
+	if err != nil {
+		t.Fatalf("load asset state: %v", err)
+	}
+	tracker.Restore(states)
+	return httptest.NewServer(NewServer(tracker, store, false).Routes()), store
 }
 
 func getAssets(t *testing.T, ts *httptest.Server, query string) []AssetView {
@@ -38,6 +56,15 @@ func getAssets(t *testing.T, ts *httptest.Server, query string) []AssetView {
 		t.Fatalf("decode assets: %v", err)
 	}
 	return views
+}
+
+func findView(views []AssetView, minor uint16) (AssetView, bool) {
+	for _, v := range views {
+		if v.Minor == minor {
+			return v, true
+		}
+	}
+	return AssetView{}, false
 }
 
 func TestIngestSampleBatch(t *testing.T) {
@@ -109,7 +136,7 @@ func TestIngestCapsBodySize(t *testing.T) {
 // Timeouts are the only thing standing between an open port and a connection
 // that is held forever, so an unset one is a real regression.
 func TestHTTPServerSetsTimeouts(t *testing.T) {
-	srv := NewServer(NewTracker(), false).HTTPServer(":0")
+	srv := NewServer(NewTracker(), nil, false).HTTPServer(":0")
 	for _, c := range []struct {
 		name string
 		got  time.Duration
@@ -193,6 +220,66 @@ func TestGatewayMACLabelFormatsMatch(t *testing.T) {
 		if zoneName(normalizeMAC(form)) != zones[0].Name {
 			t.Errorf("%q did not resolve to %q", form, zones[0].Name)
 		}
+	}
+}
+
+// The whole point of asset_state: after a redeploy the UI answers "last seen
+// in West Wing" straight away, before any gateway has reported again.
+func TestRestartRestoresLastKnownZone(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "marina.db")
+
+	ts, store := newPersistentTestServer(t, dbPath)
+	res, err := http.Post(ts.URL+"/ingest", "application/json", strings.NewReader(sampleBatch))
+	if err != nil {
+		t.Fatalf("POST /ingest: %v", err)
+	}
+	res.Body.Close()
+
+	before, ok := findView(getAssets(t, ts, ""), 0)
+	if !ok || before.Zone != "West Wing" {
+		t.Fatalf("before restart: minor 0 view = %+v, want West Wing", before)
+	}
+	ts.Close()
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	// Restart: a brand new tracker and server over the same database file.
+	restarted, _ := newPersistentTestServer(t, dbPath)
+	defer restarted.Close()
+
+	after, ok := findView(getAssets(t, restarted, ""), 0)
+	if !ok {
+		t.Fatal("minor 0 missing from /api/assets after restart")
+	}
+	if after.Zone != "West Wing" {
+		t.Errorf("zone after restart = %q, want West Wing", after.Zone)
+	}
+	if after.LastSeen.Unix() != before.LastSeen.Unix() {
+		t.Errorf("last_seen after restart = %v, want the persisted %v", after.LastSeen, before.LastSeen)
+	}
+}
+
+// Persistence must not be able to break ingest: the tracker is the live path,
+// and a closed database is logged, not returned to the gateway.
+func TestIngestSurvivesADeadStore(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "marina.db")
+	ts, store := newPersistentTestServer(t, dbPath)
+	defer ts.Close()
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	res, err := http.Post(ts.URL+"/ingest", "application/json", strings.NewReader(sampleBatch))
+	if err != nil {
+		t.Fatalf("POST /ingest: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("status with a dead store = %d, want 200 so the gateway keeps sending", res.StatusCode)
+	}
+	if v, ok := findView(getAssets(t, ts, ""), 0); !ok || v.Zone != "West Wing" {
+		t.Errorf("minor 0 view = %+v, want the tracker to resolve it regardless", v)
 	}
 }
 

@@ -1,2 +1,8 @@
 # `go build` in the module root drops an executable named after the module.
 /marina-bay
+
+# Local SQLite database (production keeps it on the Fly volume at /data).
+# -wal and -shm are the write-ahead log and shared-memory index beside it.
+*.db
+*.db-wal
+*.db-shm

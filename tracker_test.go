@@ -113,6 +113,28 @@ func TestStalenessTransition(t *testing.T) {
 	}
 }
 
+// The Sighting that Observe returns is what gets persisted, so it has to carry
+// the zone the resolver settled on — not the gateway that happened to report
+// this reading, which may well have lost the contest.
+func TestObserveReturnsResolvedSighting(t *testing.T) {
+	tr, _ := newTestTracker()
+	tr.Observe(1, gwA, -60)
+	got := tr.Observe(1, gwB, -70) // heard by B, but A keeps the asset
+
+	if got.Minor != 1 || got.Gateway != gwB || got.RSSI != -70 {
+		t.Errorf("sighting = %+v, want minor 1 heard by %s at -70", got, gwB)
+	}
+	if got.Zone != "West Wing" {
+		t.Errorf("zone = %q, want West Wing (the resolved owner, not the reporter)", got.Zone)
+	}
+	if got.ZoneRSSI != -60 {
+		t.Errorf("zone rssi = %d, want -60 (the winning gateway's EMA)", got.ZoneRSSI)
+	}
+	if !got.At.Equal(tr.now()) {
+		t.Errorf("timestamp = %v, want the observation time %v", got.At, tr.now())
+	}
+}
+
 func TestNeverSeenAssetListedOffline(t *testing.T) {
 	tr, _ := newTestTracker()
 	v := findAsset(t, tr, 2) // trolley, registered but never heard

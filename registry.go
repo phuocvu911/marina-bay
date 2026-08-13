@@ -75,6 +75,26 @@ var gatewayZone = func() map[string]*Zone {
 	return m
 }()
 
+// zoneMACs indexes zones by name, the reverse of gatewayZone. Persisted state
+// records the zone an asset was last resolved to, and restoring it into the
+// resolver means turning that name back into the gateway that owns it.
+// Normalises independently rather than leaning on gatewayZone having already
+// rewritten zones in place: package-level initialisers run in declaration
+// order here, but normalizeMAC is idempotent and this way the two indexes
+// cannot drift if either declaration moves.
+var zoneMACs = func() map[string]string {
+	m := make(map[string]string, len(zones))
+	for _, z := range zones {
+		m[z.Name] = normalizeMAC(z.MAC)
+	}
+	return m
+}()
+
+func zoneMAC(name string) (string, bool) {
+	mac, ok := zoneMACs[name]
+	return mac, ok
+}
+
 // assets maps a beacon's minor number to the asset name.
 var assets = map[uint16]string{
 	1: "cradle",
