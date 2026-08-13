@@ -53,6 +53,7 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /ingest", s.handleIngest)
 	mux.HandleFunc("GET /api/assets", s.handleAssets)
 	mux.HandleFunc("GET /api/gateways", s.handleGateways)
+	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.Handle("GET /static/", http.FileServer(http.FS(uiFS)))
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	return mux
@@ -161,6 +162,18 @@ func (s *Server) handleAssets(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGateways(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.tracker.Gateways())
+}
+
+// handleHealthz is a liveness check for the platform, deliberately not a
+// readiness check on the database. If the volume were to fail, the tracker
+// would still be resolving zones from memory and still be worth serving —
+// failing the check would restart it in a loop and turn a history outage into
+// a total one.
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if _, err := io.WriteString(w, "ok\n"); err != nil {
+		log.Printf("healthz: %v", err)
+	}
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {

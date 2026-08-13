@@ -223,6 +223,20 @@ func TestGatewayMACLabelFormatsMatch(t *testing.T) {
 	}
 }
 
+func TestHealthz(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("GET /healthz status = %d, want 200", res.StatusCode)
+	}
+}
+
 // The whole point of asset_state: after a redeploy the UI answers "last seen
 // in West Wing" straight away, before any gateway has reported again.
 func TestRestartRestoresLastKnownZone(t *testing.T) {

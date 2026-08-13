@@ -1,0 +1,46 @@
+# Fly.io configuration for the marina asset tracker.
+#
+# One machine, one volume, deliberately. Live zone decisions are made from
+# memory and history lives in SQLite on a single volume, so a second machine
+# would answer from a different database and the two would disagree about
+# where everything is. Scale this app up by giving the machine more memory,
+# never by adding machines.
+
+app = "marina-bay"     # rename to match `fly apps create <name>`
+primary_region = "arn" # Stockholm; use the region nearest the marina
+
+[env]
+  PORT = "8080"
+  DB_PATH = "/data/marina.db"
+
+[http_service]
+  internal_port = 8080
+  auto_start_machines = true
+
+  # The gateways POST roughly once a second and the retention sweeper needs to
+  # keep ticking, so the machine must never be parked for idleness.
+  auto_stop_machines = false
+  min_machines_running = 1
+
+  # Left off on purpose. A G1-E that fails TLS gets a 301 it will not follow,
+  # which looks exactly like the server being down; leaving plain HTTP served
+  # keeps the fallback in DEPLOY.md available for telling those two apart.
+  force_https = false
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "5s"
+
+# Created once, by hand, before the first deploy:
+#   fly volumes create marina_data --size 1 --region arn
+[mounts]
+  source = "marina_data"
+  destination = "/data"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "256mb"
