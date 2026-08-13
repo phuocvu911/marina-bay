@@ -4,11 +4,13 @@ import (
 	"flag"
 	"log"
 	"os"
+	"time"
 )
 
 func main() {
 	addr := flag.String("addr", defaultAddr(), "listen address (or set PORT / LISTEN_ADDR)")
 	dbPath := flag.String("db", defaultDBPath(), `SQLite database path (or set DB_PATH); "" runs without persistence`)
+	retention := flag.Duration("retention", time.Hour, "how long raw sightings are kept before being swept")
 	verbose := flag.Bool("verbose", false, "log every beacon sighting")
 	flag.Parse()
 
@@ -38,6 +40,8 @@ func main() {
 			tracker.Restore(states)
 			log.Printf("restored %d assets from %s", len(states), *dbPath)
 		}
+
+		startRetentionSweeper(store.DB(), *retention)
 	}
 
 	srv := NewServer(tracker, store, *verbose).HTTPServer(*addr)
