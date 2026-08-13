@@ -27,7 +27,10 @@ func main() {
 			// restart; run with -db "" if that is genuinely what you want.
 			log.Fatalf("open database: %v", err)
 		}
-		defer s.Close()
+		// Deliberately never closed: ListenAndServe blocks until log.Fatal
+		// exits the process, so a deferred Close here would only look like
+		// cleanup. Nothing is lost by it — every batch is committed as it
+		// arrives, and SQLite recovers its write-ahead log on the next open.
 		store = s
 
 		// Seed the resolver before the first gateway reports, so the UI shows
