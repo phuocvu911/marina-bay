@@ -33,6 +33,34 @@ type assetTrack struct {
 	readings map[string]*reading // gateway MAC -> smoothed reading
 	zoneGW   string              // gateway currently owning the asset
 	lastSeen time.Time           // most recent sighting on any gateway
+
+	// lastZone is the zone restored from asset_state when its gateway is no
+	// longer in the registry — a gateway that was retired or renamed between
+	// deploys. Without it the durable "last seen in the Gas Station" would be
+	// dropped on restart precisely because the answer is old news. Only read
+	// when no reading backs the owning gateway.
+	lastZone string
+}
+
+// Sighting is one observation after the resolver has run on it: what was heard
+// and where the asset ended up. Observe returns it so the caller can persist a
+// sighting without the tracker itself taking a dependency on storage.
+type Sighting struct {
+	Minor    uint16
+	Gateway  string // MAC of the gateway that heard this reading
+	RSSI     int    // raw RSSI of this reading
+	Zone     string // zone the asset resolved to afterwards
+	ZoneRSSI int    // smoothed EMA of the winning gateway, rounded
+	At       time.Time
+}
+
+// AssetState is an asset's durable last-known position, as persisted in the
+// asset_state table and replayed into the tracker at startup.
+type AssetState struct {
+	Minor    uint16
+	Zone     string
+	RSSI     int
+	LastSeen time.Time
 }
 
 // Tracker holds all in-memory state: per-asset signal readings and gateway
@@ -52,9 +80,11 @@ func NewTracker() *Tracker {
 	}
 }
 
-// Observe records one sighting of an asset by a gateway and re-resolves the
-// asset's zone.
-func (t *Tracker) Observe(minor uint16, gatewayMAC string, rssi int) {
+// Observe records one sighting of an asset by a gateway, re-resolves the
+// asset's zone, and returns the result for persistence. The returned Sighting
+// is a value: the caller writes it to disk after the lock is released, so a
+// slow volume can never stall a zone decision.
+func (t *Tracker) Observe(minor uint16, gatewayMAC string, rssi int) Sighting {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.now()
@@ -78,6 +108,39 @@ func (t *Tracker) Observe(minor uint16, gatewayMAC string, rssi int) {
 	a.lastSeen = now
 
 	a.resolveZone(now)
+
+	s := Sighting{Minor: minor, Gateway: gatewayMAC, RSSI: rssi, Zone: zoneName(a.zoneGW), At: now}
+	if r := a.readings[a.zoneGW]; r != nil {
+		s.ZoneRSSI = int(math.Round(r.ema))
+	}
+	return s
+}
+
+// Restore seeds the resolver from persisted asset state so a restart or
+// redeploy answers "where was it last seen" immediately, rather than showing
+// the whole fleet as never-seen until each asset is heard again.
+func (t *Tracker) Restore(states []AssetState) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	for _, st := range states {
+		a := &assetTrack{
+			minor:    st.Minor,
+			readings: make(map[string]*reading),
+			lastSeen: st.LastSeen,
+			lastZone: st.Zone,
+		}
+		// Persisted state names a zone; the resolver works in gateway MACs, so
+		// map it back. Seeding the owner's reading rather than only the label
+		// is what makes a fast restart pick the contest up where it left off:
+		// within the freshness window hysteresis still applies, and after it
+		// the reading is stale and the first gateway to report wins outright.
+		if mac, ok := zoneMAC(st.Zone); ok {
+			a.zoneGW = mac
+			a.readings[mac] = &reading{ema: float64(st.RSSI), lastSeen: st.LastSeen}
+		}
+		t.tracks[st.Minor] = a
+	}
 }
 
 // resolveZone picks the owning gateway. The current owner keeps the asset
@@ -158,6 +221,11 @@ func (t *Tracker) Assets() []AssetView {
 			if v.Online {
 				v.Proximity = proximityHint(r.ema)
 			}
+		} else {
+			// Restored from asset_state for a gateway the registry no longer
+			// lists. There is no signal to report, but the last known zone is
+			// still the most useful thing we can say about the asset.
+			v.Zone = a.lastZone
 		}
 		views[minor] = v
 	}

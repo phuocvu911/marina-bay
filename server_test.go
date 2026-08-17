@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -19,8 +20,59 @@ const sampleBatch = `[
    "raw":"AgEGGv9MAAIV4sVttd/7SNKwYND1pxCW4AAAAADF"}
 ]`
 
+// The same capture with only the two minor bytes changed, so the registered
+// assets can be exercised over the real wire format rather than a synthesised
+// frame: minor 1 is the cradle, minor 2 the trolley.
+const (
+	cradlePayload  = "AgEGGv9MAAIV4sVttd/7SNKwYND1pxCW4AAAAAHF"
+	trolleyPayload = "AgEGGv9MAAIV4sVttd/7SNKwYND1pxCW4AAAAALF"
+)
+
+// batch renders one gateway's upload: its heartbeat followed by a sighting per
+// (payload, rssi) pair, which is the shape a G1-E actually POSTs.
+func batch(gatewayMAC string, sightings ...struct {
+	payload string
+	rssi    int
+}) string {
+	entries := []string{fmt.Sprintf(`{"gateway":%q,"timestamp":1782556716937,"seq":1}`, gatewayMAC)}
+	for i, s := range sightings {
+		entries = append(entries, fmt.Sprintf(
+			`{"mac":"c30000765%03d","timestamp":1782556717035,"rssi":%d,"raw":%q}`, i, s.rssi, s.payload))
+	}
+	return "[" + strings.Join(entries, ",\n") + "]"
+}
+
+func postBatch(t *testing.T, ts *httptest.Server, body string) {
+	t.Helper()
+	res, err := http.Post(ts.URL+"/ingest", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /ingest: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("POST /ingest status = %d, want 200", res.StatusCode)
+	}
+}
+
 func newTestServer() *httptest.Server {
-	return httptest.NewServer(NewServer(NewTracker(), false).Routes())
+	return httptest.NewServer(NewServer(NewTracker(), nil, false).Routes())
+}
+
+// newPersistentTestServer wires a server to a store on disk, so a test can
+// close it and reopen the same file to model a restart.
+func newPersistentTestServer(t *testing.T, dbPath string) (*httptest.Server, *Store) {
+	t.Helper()
+	store, err := OpenStore(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	tracker := NewTracker()
+	states, err := store.LoadAssetState()
+	if err != nil {
+		t.Fatalf("load asset state: %v", err)
+	}
+	tracker.Restore(states)
+	return httptest.NewServer(NewServer(tracker, store, false).Routes()), store
 }
 
 func getAssets(t *testing.T, ts *httptest.Server, query string) []AssetView {
@@ -38,6 +90,15 @@ func getAssets(t *testing.T, ts *httptest.Server, query string) []AssetView {
 		t.Fatalf("decode assets: %v", err)
 	}
 	return views
+}
+
+func findView(views []AssetView, minor uint16) (AssetView, bool) {
+	for _, v := range views {
+		if v.Minor == minor {
+			return v, true
+		}
+	}
+	return AssetView{}, false
 }
 
 func TestIngestSampleBatch(t *testing.T) {
@@ -63,6 +124,76 @@ func TestIngestSampleBatch(t *testing.T) {
 		}
 	}
 	t.Error("ingested beacon (minor 0) missing from /api/assets")
+}
+
+// The end-to-end shape of the whole system: several gateways upload their own
+// batches, each hearing the same assets at different strengths, and every
+// asset lands in the sector of the gateway that heard it loudest.
+func TestIngestMultiGatewayResolvesEachAssetToTheLoudest(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	type sighting = struct {
+		payload string
+		rssi    int
+	}
+	// The cradle is by the west wall and the trolley is out at the east end,
+	// so each is loud on one gateway and faint on the others.
+	postBatch(t, ts, batch("ac233fc26fb0", sighting{cradlePayload, -45}, sighting{trolleyPayload, -88}))
+	postBatch(t, ts, batch("ac233fc270d4", sighting{cradlePayload, -71}, sighting{trolleyPayload, -80}))
+	postBatch(t, ts, batch("ac233fc26fb8", sighting{cradlePayload, -90}, sighting{trolleyPayload, -62}))
+
+	views := getAssets(t, ts, "")
+	cradle, ok := findView(views, 1)
+	if !ok {
+		t.Fatal("cradle (minor 1) missing from /api/assets")
+	}
+	if cradle.Zone != "West Wing" || !cradle.Online {
+		t.Errorf("cradle = %+v, want online in West Wing (-45 beats -71 and -90)", cradle)
+	}
+	if cradle.Proximity != "very close" {
+		t.Errorf("cradle proximity = %q, want very close at -45 dBm", cradle.Proximity)
+	}
+
+	trolley, ok := findView(views, 2)
+	if !ok {
+		t.Fatal("trolley (minor 2) missing from /api/assets")
+	}
+	if trolley.Zone != "East Office" || !trolley.Online {
+		t.Errorf("trolley = %+v, want online in East Office (-62 beats -80 and -88)", trolley)
+	}
+	// The two assets are in different sectors at different strengths, so the
+	// hints have to differ too — a proximity that ignored the winning EMA
+	// would still pass every zone assertion above.
+	if trolley.Proximity != "nearby" {
+		t.Errorf("trolley proximity = %q, want nearby at -62 dBm", trolley.Proximity)
+	}
+}
+
+// A gateway that goes on hearing an asset it has already lost must not drag it
+// back: the hysteresis margin is what keeps an asset on the boundary between
+// two gateways from flickering between sectors on the UI's 2 s poll.
+func TestIngestKeepsAssetStableUnderMarginalCompetition(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	type sighting = struct {
+		payload string
+		rssi    int
+	}
+	postBatch(t, ts, batch("ac233fc26fb0", sighting{cradlePayload, -60}))
+	postBatch(t, ts, batch("ac233fc270d4", sighting{cradlePayload, -58})) // 2 dBm: under the margin
+
+	v, _ := findView(getAssets(t, ts, ""), 1)
+	if v.Zone != "West Wing" {
+		t.Errorf("zone = %q, want West Wing — 2 dBm must not move an asset", v.Zone)
+	}
+
+	postBatch(t, ts, batch("ac233fc270d4", sighting{cradlePayload, -40})) // now clears it
+	v, _ = findView(getAssets(t, ts, ""), 1)
+	if v.Zone != "Stair A" {
+		t.Errorf("zone = %q, want Stair A once the challenger clears the margin", v.Zone)
+	}
 }
 
 func TestIngestGarbageStillReturns200(t *testing.T) {
@@ -109,7 +240,7 @@ func TestIngestCapsBodySize(t *testing.T) {
 // Timeouts are the only thing standing between an open port and a connection
 // that is held forever, so an unset one is a real regression.
 func TestHTTPServerSetsTimeouts(t *testing.T) {
-	srv := NewServer(NewTracker(), false).HTTPServer(":0")
+	srv := NewServer(NewTracker(), nil, false).HTTPServer(":0")
 	for _, c := range []struct {
 		name string
 		got  time.Duration
@@ -193,6 +324,80 @@ func TestGatewayMACLabelFormatsMatch(t *testing.T) {
 		if zoneName(normalizeMAC(form)) != zones[0].Name {
 			t.Errorf("%q did not resolve to %q", form, zones[0].Name)
 		}
+	}
+}
+
+func TestHealthz(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("GET /healthz status = %d, want 200", res.StatusCode)
+	}
+}
+
+// The whole point of asset_state: after a redeploy the UI answers "last seen
+// in West Wing" straight away, before any gateway has reported again.
+func TestRestartRestoresLastKnownZone(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "marina.db")
+
+	ts, store := newPersistentTestServer(t, dbPath)
+	res, err := http.Post(ts.URL+"/ingest", "application/json", strings.NewReader(sampleBatch))
+	if err != nil {
+		t.Fatalf("POST /ingest: %v", err)
+	}
+	res.Body.Close()
+
+	before, ok := findView(getAssets(t, ts, ""), 0)
+	if !ok || before.Zone != "West Wing" {
+		t.Fatalf("before restart: minor 0 view = %+v, want West Wing", before)
+	}
+	ts.Close()
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	// Restart: a brand new tracker and server over the same database file.
+	restarted, _ := newPersistentTestServer(t, dbPath)
+	defer restarted.Close()
+
+	after, ok := findView(getAssets(t, restarted, ""), 0)
+	if !ok {
+		t.Fatal("minor 0 missing from /api/assets after restart")
+	}
+	if after.Zone != "West Wing" {
+		t.Errorf("zone after restart = %q, want West Wing", after.Zone)
+	}
+	if after.LastSeen.Unix() != before.LastSeen.Unix() {
+		t.Errorf("last_seen after restart = %v, want the persisted %v", after.LastSeen, before.LastSeen)
+	}
+}
+
+// Persistence must not be able to break ingest: the tracker is the live path,
+// and a closed database is logged, not returned to the gateway.
+func TestIngestSurvivesADeadStore(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "marina.db")
+	ts, store := newPersistentTestServer(t, dbPath)
+	defer ts.Close()
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	res, err := http.Post(ts.URL+"/ingest", "application/json", strings.NewReader(sampleBatch))
+	if err != nil {
+		t.Fatalf("POST /ingest: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("status with a dead store = %d, want 200 so the gateway keeps sending", res.StatusCode)
+	}
+	if v, ok := findView(getAssets(t, ts, ""), 0); !ok || v.Zone != "West Wing" {
+		t.Errorf("minor 0 view = %+v, want the tracker to resolve it regardless", v)
 	}
 }
 

@@ -17,8 +17,11 @@ import (
 var uiFS embed.FS
 
 // Server carries handler dependencies; no globals beyond the registry maps.
+// store may be nil — the tracker is the live path and the server answers
+// normally without persistence.
 type Server struct {
 	tracker *Tracker
+	store   *Store
 	tmpl    *template.Template
 	verbose bool
 }
@@ -36,9 +39,10 @@ var tmplFuncs = template.FuncMap{
 	},
 }
 
-func NewServer(tracker *Tracker, verbose bool) *Server {
+func NewServer(tracker *Tracker, store *Store, verbose bool) *Server {
 	return &Server{
 		tracker: tracker,
+		store:   store,
 		tmpl:    template.Must(template.New("ui").Funcs(tmplFuncs).ParseFS(uiFS, "templates/*.html")),
 		verbose: verbose,
 	}
@@ -49,6 +53,7 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /ingest", s.handleIngest)
 	mux.HandleFunc("GET /api/assets", s.handleAssets)
 	mux.HandleFunc("GET /api/gateways", s.handleGateways)
+	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.Handle("GET /static/", http.FileServer(http.FS(uiFS)))
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	return mux
@@ -108,6 +113,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sightings := make([]Sighting, 0, len(entries))
 	for _, e := range entries {
 		if e.MAC == "" || e.Raw == "" {
 			continue
@@ -124,9 +130,20 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		if !strings.EqualFold(b.UUID, fleetUUID) {
 			continue // ambient iBeacon, not ours
 		}
-		s.tracker.Observe(b.Minor, gatewayMAC, e.RSSI)
+		sightings = append(sightings, s.tracker.Observe(b.Minor, gatewayMAC, e.RSSI))
 		if s.verbose {
 			log.Printf("sighting: minor=%d (%s) rssi=%d via %s", b.Minor, assetName(b.Minor), e.RSSI, gatewayMAC)
+		}
+	}
+
+	// Persisted after the whole batch is resolved, in one transaction, and
+	// outside the tracker's lock. A failing disk is logged like every other
+	// ingest problem: zone resolution has already happened in memory and the
+	// API keeps answering, so there is nothing to gain from a 500 the gateway
+	// would only retry into the same error.
+	if s.store != nil {
+		if err := s.store.Record(sightings...); err != nil {
+			log.Printf("ingest: persist %d sightings from %s: %v", len(sightings), gatewayMAC, err)
 		}
 	}
 }
@@ -145,6 +162,18 @@ func (s *Server) handleAssets(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGateways(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.tracker.Gateways())
+}
+
+// handleHealthz is a liveness check for the platform, deliberately not a
+// readiness check on the database. If the volume were to fail, the tracker
+// would still be resolving zones from memory and still be worth serving —
+// failing the check would restart it in a loop and turn a history outage into
+// a total one.
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if _, err := io.WriteString(w, "ok\n"); err != nil {
+		log.Printf("healthz: %v", err)
+	}
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
